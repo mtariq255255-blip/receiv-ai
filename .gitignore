@@ -1,0 +1,22 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Next.js
+node_modules/
+.next/
+out/
+
+# Private invoice documents
+backend/storage/invoices/*
+!backend/storage/invoices/.gitkeep
+
+# Logs
+*.log

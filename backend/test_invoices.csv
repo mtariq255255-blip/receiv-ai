@@ -1,0 +1,5 @@
+
+invoice_number,customer_name,customer_email,amount_aed,currency,issue_date,due_date,notes
+RAI-P3-TEST-001,Al Noor Cleaning,accounts@alnoor.example,2500.00,AED,2026-11-01,2026-11-20,Monthly cleaning services
+RAI-P3-TEST-002,Desert Star Services,finance@desertstar.example,1800.50,AED,2026-10-01,2026-10-20,Maintenance services
+RAI-P3-TEST-003,Green Horizon Trading,accounts@greenhorizon.example,4200.00,AED,2026-10-15,2026-11-30,Office supplies
