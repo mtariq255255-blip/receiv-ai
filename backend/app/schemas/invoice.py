@@ -105,3 +105,34 @@ class InvoiceReviewResponse(BaseModel):
     review_status: str
     status: str
     amount_aed: str
+
+
+class InvoiceStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(paid|unpaid)$")
+
+
+class InvoiceCorrectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reason: str = Field(min_length=1, max_length=2000)
+    invoice_number: str | None = Field(default=None, min_length=1, max_length=100)
+    customer_name: str | None = Field(default=None, min_length=1, max_length=180)
+    customer_email: str | None = Field(default=None, max_length=180)
+    supplier_name: str | None = Field(default=None, max_length=180)
+    supplier_trn: str | None = Field(default=None, max_length=30)
+    issue_date: date | None = None
+    due_date: date | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_correction(self):
+        editable_fields = self.model_fields_set - {"reason"}
+        if not editable_fields:
+            raise ValueError("Provide at least one invoice field to correct.")
+        if (
+            self.issue_date is not None
+            and self.due_date is not None
+            and self.due_date < self.issue_date
+        ):
+            raise ValueError("Due date cannot be earlier than the issue date.")
+        return self

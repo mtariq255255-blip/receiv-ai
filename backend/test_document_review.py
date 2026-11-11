@@ -3,6 +3,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from sqlalchemy import create_engine
 
 from app.api.routes import documents
 from app.models import Invoice, InvoiceDocument, InvoiceItem
@@ -147,6 +148,41 @@ def validate_for_approval(document, db, request, admin):
     )
 
 
+def verify_invoice_timestamp_defaults():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    try:
+        Invoice.__table__.create(engine)
+        with engine.begin() as connection:
+            inserted = connection.execute(
+                Invoice.__table__.insert().values(
+                    id=1,
+                    invoice_number="TIMESTAMP-TEST",
+                    customer_name="Timestamp Test",
+                    amount_aed=Decimal("10.00"),
+                    issue_date=date(2026, 10, 1),
+                    due_date=date(2026, 11, 1),
+                    status="unpaid",
+                    source_type="pdf",
+                    review_status="reviewed",
+                ).returning(
+                    Invoice.__table__.c.created_at,
+                    Invoice.__table__.c.updated_at,
+                )
+            ).one()
+            assert inserted.created_at is not None
+            assert inserted.updated_at is not None
+
+            updated = connection.execute(
+                Invoice.__table__.update()
+                .where(Invoice.__table__.c.invoice_number == "TIMESTAMP-TEST")
+                .values(notes="Updated")
+                .returning(Invoice.__table__.c.updated_at)
+            ).one()
+            assert updated.updated_at is not None
+    finally:
+        engine.dispose()
+
+
 def run_tests():
     original_audit = documents.create_audit_log
 
@@ -156,6 +192,9 @@ def run_tests():
     documents.create_audit_log = no_audit_log
     admin = SimpleNamespace(id=1)
     try:
+        verify_invoice_timestamp_defaults()
+        print("PASS: invoice timestamps default on insert and update")
+
         # Corrected invoice values validate and persist validation JSON for review.
         document = new_document()
         db = FakeDatabase(document)
@@ -183,6 +222,7 @@ def run_tests():
 
         # Approval stores a deterministic invoice and its item atomically.
         document = new_document()
+        document.original_filename = "register.xlsx"
         db = FakeDatabase(document)
         validate_for_approval(document, db, review_request(), admin)
         db.commits = 0
@@ -193,6 +233,7 @@ def run_tests():
         saved_item = next(item for item in db.added if isinstance(item, InvoiceItem))
         assert response.amount_aed == "105.00"
         assert saved_invoice.amount_aed == Decimal("105.00")
+        assert saved_invoice.source_type == "xlsx"
         assert saved_item.line_total_aed == Decimal("105.00")
         assert document.invoice_id == 42
         assert db.commits == 1 and db.rollbacks == 0

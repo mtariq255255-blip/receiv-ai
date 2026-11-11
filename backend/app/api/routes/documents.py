@@ -18,6 +18,7 @@ from fastapi import (
     UploadFile,
     status
 )
+from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -954,6 +955,48 @@ def reject_document_invoice(
 # ---------------------------------------------------------
 
 @router.get(
+    "/{document_id}/preview",
+    response_class=FileResponse,
+    summary="Preview the original uploaded document",
+)
+def preview_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return a stored source file only through the authenticated document API."""
+    document = db.get(InvoiceDocument, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    storage_root = Path(settings.invoice_storage_dir).resolve()
+    file_path = Path(document.storage_path).resolve()
+    try:
+        file_path.relative_to(storage_root)
+    except ValueError as exc:
+        logger.error("Stored document path is outside private storage.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Stored document is unavailable.",
+        ) from exc
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Stored document file is unavailable.")
+
+    media_type = document.mime_type or mimetypes.guess_type(
+        document.original_filename
+    )[0] or "application/octet-stream"
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=Path(document.original_filename).name,
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(
     "/{document_id}",
     response_model=DocumentDetailResponse,
     summary="Get document processing and review details",
@@ -1120,6 +1163,7 @@ def _process_document_record(
         "revision_history",
         "raw_extraction",
         "processing_metadata",
+        "processing_error",
         "warnings",
     ):
         data.pop(key, None)
@@ -1173,7 +1217,7 @@ def _process_document_record(
                 "manual_review_required": (
                     structured.get("manual_review_required") is True
                 ),
-                "parser_version": structured.get("parser_version", "privacy-v1"),
+                "parser_version": structured.get("parser_version", "privacy-v2"),
                 "processing_reason": structured.get(
                     "processing_reason",
                     "Administrator review is required.",

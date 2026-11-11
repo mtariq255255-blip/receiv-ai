@@ -8,8 +8,10 @@ import AuthenticatedPage from "@/components/documents/AuthenticatedPage";
 import DocumentDetails from "@/components/documents/DocumentDetails";
 import DocumentStatusBadge from "@/components/documents/DocumentStatusBadge";
 import InvoiceReview from "@/components/documents/InvoiceReview";
+import WorkspaceSidebar from "@/components/WorkspaceSidebar";
 import {
   DocumentDetails as DocumentDetailsRecord,
+  clearToken,
   getDocument,
   processDocument,
   retryDocument,
@@ -63,8 +65,19 @@ function DocumentDetailWorkspace() {
     }
   }
 
+  function logout() {
+    clearToken();
+    router.replace("/");
+  }
+
   return (
-    <main className="document-workspace">
+    <div className="app-shell">
+      <WorkspaceSidebar
+        activeView="Document Intelligence"
+        onLogout={logout}
+      />
+      <div className="main-area">
+        <main className="document-workspace">
       <header className="document-topbar">
         <Link className="document-brand" href="/documents">
           <span className="document-brand-mark">R</span>
@@ -146,7 +159,9 @@ function DocumentDetailWorkspace() {
           </>
         ) : null}
       </div>
-    </main>
+        </main>
+      </div>
+    </div>
   );
 }
 

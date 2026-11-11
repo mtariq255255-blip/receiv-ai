@@ -43,6 +43,7 @@ export type UAEInvoice = {
   currency?: string | null;
   items?: UAEInvoiceItem[];
   subtotal_aed?: string | number | null;
+  subtotal_before_discount_aed?: string | number | null;
   discount_aed?: string | number | null;
   vat_amount_aed?: string | number | null;
   total_amount_aed?: string | number | null;
@@ -129,6 +130,9 @@ export type InvoiceRecord = {
   status: string;
   source_type: string;
   review_status: string;
+  notes?: string | null;
+  supplier_name?: string | null;
+  supplier_trn?: string | null;
 };
 
 export type DocumentCorrectionPayload = UAEInvoice & {
@@ -276,6 +280,12 @@ export const apiPut = <T,>(path: string, body: unknown) =>
     body: JSON.stringify(body),
   });
 
+export const apiPatch = <T,>(path: string, body: unknown) =>
+  request<T>(path, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+
 export const apiUpload = <T,>(path: string, file: File) => {
   const form = new FormData();
   form.append("file", file);
@@ -328,6 +338,42 @@ export function getDocument(documentId: number): Promise<DocumentDetails> {
   return apiGet<DocumentDetails>(`/api/documents/${documentId}`);
 }
 
+export async function getDocumentPreview(documentId: number): Promise<Blob> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/api/documents/${documentId}/preview`,
+      { headers, cache: "no-store" },
+    );
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Unable to reach the ReceivAI API: ${error.message}`);
+    }
+    throw new Error("Unable to reach the ReceivAI API.");
+  }
+
+  if (response.status === 401) {
+    notifyUnauthorized();
+    throw new Error("Your session has expired. Please sign in again.");
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as {
+      detail?: unknown;
+    };
+    throw new Error(
+      typeof body.detail === "string"
+        ? body.detail
+        : `Unable to load source document (${response.status}).`,
+    );
+  }
+
+  return response.blob();
+}
+
 export function correctDocument(
   documentId: number,
   payload: DocumentCorrectionPayload,
@@ -370,6 +416,35 @@ export function rejectDocument(
 
 export function getInvoice(invoiceId: number): Promise<InvoiceRecord> {
   return apiGet<InvoiceRecord>(`/api/invoices/${invoiceId}`);
+}
+
+export function updateInvoiceStatus(
+  invoiceId: number,
+  status: "paid" | "unpaid",
+): Promise<InvoiceRecord> {
+  return apiPatch<InvoiceRecord>(`/api/invoices/${invoiceId}/status`, { status });
+}
+
+export type InvoiceCorrection = {
+  reason: string;
+  invoice_number?: string;
+  customer_name?: string;
+  customer_email?: string | null;
+  supplier_name?: string | null;
+  supplier_trn?: string | null;
+  issue_date?: string;
+  due_date?: string;
+  notes?: string | null;
+};
+
+export function correctApprovedInvoice(
+  invoiceId: number,
+  correction: InvoiceCorrection,
+): Promise<InvoiceRecord> {
+  return apiPatch<InvoiceRecord>(
+    `/api/invoices/${invoiceId}/correction`,
+    correction,
+  );
 }
 
 export const login = (email: string, password: string) =>

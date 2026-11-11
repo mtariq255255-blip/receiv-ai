@@ -19,6 +19,9 @@ class InvoiceOut(BaseModel):
     status: str
     source_type: str
     review_status: str
+    notes: str | None = None
+    supplier_name: str | None = None
+    supplier_trn: str | None = None
 
     model_config = ConfigDict(
         from_attributes=True

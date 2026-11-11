@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
@@ -7,10 +8,12 @@ from pydantic import ValidationError
 
 from app.schemas.uae_invoice import UAEInvoiceExtractionSchema
 from app.services.invoice_column_mapper import map_columns
+from app.services.docx_invoice_parser import parse_docx_invoice
+from app.services.pdf_invoice_layout_parser import parse_pdf_layout
 from app.services.privacy_filter import sanitize_column_headings
 
 
-PARSER_VERSION = "privacy-v1"
+PARSER_VERSION = "privacy-v2"
 MAX_LOCAL_RECORDS = 100_000
 CENT = Decimal("0.01")
 
@@ -257,40 +260,211 @@ def _parse_text_invoice(raw_extraction: dict, notes: list[str]) -> list[dict]:
     text = raw_extraction.get("text")
     if not isinstance(text, str) or not text.strip():
         return []
-    labels = {
-        "invoice_number": r"invoice\s*(?:number|no\.?|#)\s*[:#-]?\s*([^\r\n|]+)",
-        "supplier_name": r"(?:supplier|vendor|seller)\s*(?:name)?\s*[:\-]\s*([^\r\n|]+)",
-        "supplier_trn": r"(?:supplier|vendor|seller)?\s*trn\s*[:\-]\s*([^\r\n|]+)",
-        "customer_name": r"(?:buyer|customer|client)\s*(?:name)?\s*[:\-]\s*([^\r\n|]+)",
-        "customer_trn": r"(?:buyer|customer|client)?\s*trn\s*[:\-]\s*([^\r\n|]+)",
-        "issue_date": r"(?:invoice\s+date|issue\s+date)\s*[:\-]\s*([^\r\n|]+)",
-        "supply_date": r"(?:date\s+of\s+supply|supply\s+date)\s*[:\-]\s*([^\r\n|]+)",
-        "due_date": r"(?:due\s+date|payment\s+due)\s*[:\-]\s*([^\r\n|]+)",
-        "currency": r"currency\s*[:\-]\s*([A-Za-z]{3})\b",
-        "subtotal_aed": r"(?:subtotal|sub\s+total)\s*[:\-]\s*(?:AED\s*)?([\d,]+(?:\.\d{1,2})?)",
-        "vat_amount_aed": r"(?:vat\s+amount|total\s+vat)\s*[:\-]\s*(?:AED\s*)?([\d,]+(?:\.\d{1,2})?)",
-        "total_amount_aed": r"(?:grand\s+total|total\s+payable|invoice\s+total)\s*[:\-]\s*(?:AED\s*)?([\d,]+(?:\.\d{1,2})?)",
-    }
-    found = {}
-    for field, pattern in labels.items():
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            found[field] = match.group(1).strip()
-    if not found or not re.search(r"\binvoice\b", text, flags=re.IGNORECASE):
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not re.fullmatch(r"---\s*Page\s+\d+\s*---", line.strip(), re.I)
+    ]
+    normalized_text = "\n".join(lines)
+    found: dict[str, Any] = {}
+
+    def capture(pattern: str, source: str = normalized_text) -> str | None:
+        match = re.search(pattern, source, flags=re.IGNORECASE | re.MULTILINE)
+        return match.group(1).strip() if match else None
+
+    invoice_number = capture(
+        r"\binvoice\s*(?:number|no\.?|#)\s*[:#-]?\s*"
+        r"([A-Z0-9][A-Z0-9/_-]*?)(?=TAX\s+INVOICE|\s|$)"
+    )
+    if invoice_number:
+        found["invoice_number"] = invoice_number
+
+    for field, pattern in (
+        ("supplier_name", r"\b(?:supplier|vendor|seller)\s+name\s*[:\-]\s*([^\r\n]+)"),
+        ("customer_name", r"\b(?:buyer|customer|client)\s+name\s*[:\-]\s*([^\r\n]+)"),
+        ("supplier_trn", r"\b(?:supplier|vendor|seller)\s+trn\s*:\s*(\d{15})\b"),
+        ("customer_trn", r"\b(?:buyer|customer|client)\s+trn\s*:\s*(\d{15})\b"),
+    ):
+        value = capture(pattern)
+        if value:
+            found[field] = value
+
+    for field, pattern in (
+        ("supplier_name", r"\b(?:supplier|vendor|seller)\s*(?:name)?\s*[:\-]\s*([^\r\n]+)"),
+        ("customer_name", r"\b(?:buyer|customer|client)\s*(?:name)?\s*[:\-]\s*([^\r\n]+)"),
+        ("issue_date", r"\b(?:invoice\s+date|issue\s+date)\s*[:\-]\s*([^\r\n]+)"),
+        ("supply_date", r"\b(?:date\s+of\s+supply|supply\s+date)\s*[:\-]\s*([^\r\n]+)"),
+        ("due_date", r"\b(?:due\s+date|payment\s+due)\s*[:\-]\s*([^\r\n]+)"),
+    ):
+        value = capture(pattern)
+        if value:
+            found[field] = value
+    for field in ("issue_date", "supply_date", "due_date"):
+        value = found.get(field)
+        if isinstance(value, str):
+            for date_format in (
+                "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y",
+                "%d %b %Y", "%d %B %Y",
+            ):
+                try:
+                    found[field] = datetime.strptime(value, date_format).date()
+                    break
+                except ValueError:
+                    continue
+
+    currency_label = capture(r"\bcurrency\s*[:\-]\s*([A-Z]{3})\b")
+    if currency_label:
+        found["currency"] = currency_label.upper()
+
+    for index, line in enumerate(lines):
+        if re.search(r"\bSUPPLIER\b", line, re.I) and re.search(
+            r"\bBILL\s+TO\b", line, re.I
+        ):
+            if index + 1 < len(lines):
+                names = re.split(r"\s{2,}", lines[index + 1].strip())
+                if len(names) >= 2:
+                    found.setdefault("supplier_name", names[0].strip())
+                    found.setdefault("customer_name", names[1].strip())
+            if index + 2 < len(lines):
+                addresses = re.split(r"\s{2,}", lines[index + 2].strip())
+                if len(addresses) >= 2:
+                    found.setdefault("supplier_address", addresses[0].strip())
+                    found.setdefault("customer_address", addresses[1].strip())
+            break
+
+    date_pattern = re.compile(
+        r"\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\b"
+    )
+    for index, line in enumerate(lines):
+        if (
+            re.search(r"\binvoice\s+date\b", line, re.I)
+            and re.search(r"\bsupply\s+date\b", line, re.I)
+            and re.search(r"\bdue\s+date\b", line, re.I)
+            and index + 1 < len(lines)
+        ):
+            dates = date_pattern.findall(lines[index + 1])
+            if len(dates) >= 3:
+                for field, value in zip(
+                    ("issue_date", "supply_date", "due_date"),
+                    dates[:3],
+                ):
+                    for date_format in ("%d %b %Y", "%d %B %Y"):
+                        try:
+                            found[field] = datetime.strptime(
+                                value, date_format
+                            ).date()
+                            break
+                        except ValueError:
+                            continue
+            currency_tokens = lines[index + 1].split()
+            if currency_tokens and re.fullmatch(
+                r"[A-Z]{3}", currency_tokens[-1], flags=re.I
+            ):
+                found["currency"] = currency_tokens[-1].upper()
+            break
+
+    found.setdefault(
+        "currency",
+        capture(r"\b(?:TOTAL\s+DUE|GRAND\s+TOTAL)\s*\(\s*([A-Z]{3})\s*\)"),
+    )
+    if found["currency"] is None and re.search(r"\bAED\b", normalized_text, re.I):
+        found["currency"] = "AED"
+
+    amount_pattern = r"([\d,]+(?:\.\d{1,2})?)\s*$"
+    amounts: dict[str, Decimal] = {}
+    for field, pattern in (
+        ("total_amount_aed", rf"\b(?:total\s+due|grand\s+total|total\s+payable|invoice\s+total)\b(?:\s*\([^)]*\))?\s*[:\-]?\s*(?:AED\s*)?{amount_pattern}"),
+        ("vat_amount_aed", rf"^\s*VAT(?:\s*\(\s*\d+(?:\.\d+)?%\s*\))?\s*(?:amount)?\s*[:\-]?\s*(?:AED\s*)?{amount_pattern}"),
+        ("discount_aed", rf"^\s*Discount\s*[:\-]?\s*(?:AED\s*)?{amount_pattern}"),
+        ("subtotal_aed", rf"^\s*Taxable\s+amount\s*[:\-]?\s*(?:AED\s*)?{amount_pattern}"),
+    ):
+        value = capture(pattern)
+        amount = decimal_or_none(value) if value else None
+        if amount is not None:
+            amounts[field] = amount.quantize(CENT, rounding=ROUND_HALF_UP)
+
+    item_pattern = re.compile(
+        r"^\s*(?P<description>.+?)\s{2,}"
+        r"(?P<quantity>\d+(?:\.\d+)?)\s+"
+        r"(?P<unit_price>[\d,]+(?:\.\d{1,2})?)\s+"
+        r"(?P<discount>[\d,]+(?:\.\d{1,2})?)\s+"
+        r"(?P<vat_rate>\d+(?:\.\d+)?%)\s+"
+        r"(?P<line_total>[\d,]+(?:\.\d{1,2})?)\s*$",
+        re.I,
+    )
+    items: list[dict[str, Any]] = []
+    for line in lines:
+        match = item_pattern.match(line)
+        if not match:
+            continue
+        values = match.groupdict()
+        quantity = decimal_or_none(values["quantity"])
+        unit_price = decimal_or_none(values["unit_price"])
+        discount = decimal_or_none(values["discount"])
+        vat_rate = decimal_or_none(values["vat_rate"].rstrip("%"))
+        line_total = decimal_or_none(values["line_total"])
+        if any(value is None for value in (
+            quantity, unit_price, discount, vat_rate, line_total
+        )):
+            continue
+        taxable = calculate_taxable_value(quantity, unit_price, discount)
+        vat_amount = calculate_vat(taxable, vat_rate)
+        if taxable is None or vat_amount is None:
+            continue
+        items.append({
+            "description": values["description"].strip(),
+            "quantity": quantity,
+            "unit_price_aed": unit_price,
+            "discount_aed": discount,
+            "taxable_value_aed": taxable,
+            "vat_rate": vat_rate,
+            "vat_amount_aed": vat_amount,
+            "line_total_aed": line_total,
+        })
+
+    if items:
+        amounts["subtotal_aed"] = sum(
+            (item["taxable_value_aed"] for item in items),
+            Decimal("0"),
+        ).quantize(CENT, rounding=ROUND_HALF_UP)
+        amounts["discount_aed"] = sum(
+            (item["discount_aed"] for item in items),
+            Decimal("0"),
+        ).quantize(CENT, rounding=ROUND_HALF_UP)
+        amounts["vat_amount_aed"] = sum(
+            (item["vat_amount_aed"] for item in items),
+            Decimal("0"),
+        ).quantize(CENT, rounding=ROUND_HALF_UP)
+        amounts.setdefault(
+            "total_amount_aed",
+            sum(
+                (item["line_total_aed"] for item in items),
+                Decimal("0"),
+            ).quantize(CENT, rounding=ROUND_HALF_UP),
+        )
+    found.update(amounts)
+
+    if not found or not re.search(r"\binvoice\b", normalized_text, re.I):
         return []
     found.setdefault("currency", None)
     found.update({
-        "items": [],
-        "extraction_confidence": 0.0,
+        "items": items,
+        "extraction_confidence": 0.85 if items else 0.0,
         "missing_fields": [],
         "extraction_notes": [],
         "document_classification": "single_invoice",
         "source_filename": raw_extraction.get("filename"),
     })
-    notes.append(
-        "Text extraction found labeled invoice fields; line-item structure "
-        "was not confidently identified."
-    )
+    if not items:
+        notes.append(
+            "Text extraction found labeled invoice fields; line-item structure "
+            "was not confidently identified."
+        )
+    else:
+        notes.append(
+            "Invoice fields and line items were parsed from labeled text; "
+            "verify them against the retained source before approval."
+        )
     return [found]
 
 
@@ -299,6 +473,26 @@ def parse_local_invoices(
     ai_mappings: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     notes: list[str] = list(raw_extraction.get("warnings") or [])
+    if raw_extraction.get("file_type") == "docx":
+        docx_result = parse_docx_invoice(raw_extraction)
+        if docx_result["invoices"]:
+            return docx_result
+        notes.extend(docx_result["extraction_notes"])
+
+    pdf_layout_attempted = False
+    pdf_layout_notes: list[str] = []
+    pdf_layout_invoices: list[dict] = []
+    if raw_extraction.get("file_type") == "pdf" and raw_extraction.get("layout_pages"):
+        pdf_layout_attempted = True
+        try:
+            pdf_layout_invoices, pdf_layout_notes = parse_pdf_layout(raw_extraction)
+        except ValidationError:
+            pdf_layout_notes = [
+                "Position-aware PDF extraction did not fit the supported invoice schema."
+            ]
+        if pdf_layout_invoices:
+            notes.extend(pdf_layout_notes)
+
     tables = raw_extraction.get("tables")
     if not isinstance(tables, list):
         tables = []
@@ -429,7 +623,7 @@ def parse_local_invoices(
                 observed_suppliers[invoice_group].add(supplier_identity)
             processed_count += 1
 
-    invoices: list[dict] = []
+    invoices: list[dict] = list(pdf_layout_invoices)
     for group_key, rows in grouped.items():
         sheet_name, invoice_key, _ = group_key
         mapping = group_mappings[group_key]
@@ -469,7 +663,7 @@ def parse_local_invoices(
             continue
         notes.extend(invoice_notes)
 
-    if not invoices and not selected_tables:
+    if not invoices and not selected_tables and not pdf_layout_attempted:
         invoices = _parse_text_invoice(raw_extraction, notes)
         for data in invoices:
             try:
@@ -480,6 +674,9 @@ def parse_local_invoices(
                 notes.append(
                     "Recognized invoice text did not fit the supported schema."
                 )
+
+    if pdf_layout_attempted and not pdf_layout_invoices:
+        notes.extend(pdf_layout_notes)
 
     warning_text = " ".join(notes).casefold()
     truncated = any(
@@ -496,8 +693,9 @@ def parse_local_invoices(
         )
     )
     conflicts = any("conflicting" in note.casefold() for note in notes)
+    missing_line_items = any(not invoice.get("items") for invoice in invoices)
     local_reliable = bool(invoices) and not (
-        critical_missing or conflicts or truncated
+        critical_missing or conflicts or truncated or missing_line_items
     )
     if not invoices:
         notes.append(

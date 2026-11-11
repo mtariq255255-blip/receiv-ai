@@ -10,8 +10,9 @@ import {
 } from "react";
 import Link from "next/link";
 
-import { apiGet, apiPost, getDocuments } from "@/lib/api";
+import { apiGet, apiPost, getDocuments, updateInvoiceStatus } from "@/lib/api";
 import DocumentUpload from "@/components/documents/DocumentUpload";
+import WorkspaceSidebar from "@/components/WorkspaceSidebar";
 
 type Summary = {
   invoice_count: number;
@@ -74,14 +75,6 @@ type DashboardProps = {
   onLogout: () => void;
 };
 
-const views = [
-  { name: "Overview", icon: "bi-grid-1x2-fill" },
-  { name: "Invoice Management", icon: "bi-receipt-cutoff" },
-  { name: "Payment Collections", icon: "bi-wallet2" },
-  { name: "Cash Flow Forecast", icon: "bi-graph-up-arrow" },
-  { name: "AI Finance Assistant", icon: "bi-robot" },
-];
-
 const money = (v: number | string | null | undefined) =>
   `AED ${Number(v ?? 0).toLocaleString("en-AE", {
     minimumFractionDigits: 2,
@@ -111,7 +104,20 @@ export default function Dashboard({
   adminEmail,
   onLogout,
 }: DashboardProps) {
-  const [view, setView] = useState("Overview");
+  const [view, setView] = useState(() => {
+    if (typeof window === "undefined") return "Overview";
+    const requestedView = new URLSearchParams(window.location.search).get("view");
+    const availableViews = [
+      "Overview",
+      "Invoice Management",
+      "Payment Collections",
+      "Cash Flow Forecast",
+      "AI Finance Assistant",
+    ];
+    return requestedView && availableViews.includes(requestedView)
+      ? requestedView
+      : "Overview";
+  });
   const [summary, setSummary] = useState<Summary | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
@@ -120,7 +126,17 @@ export default function Dashboard({
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const requestedView = new URLSearchParams(window.location.search).get("view");
+    if (requestedView === "Reports") {
+      return "Reports will be enabled in a later implementation phase.";
+    }
+    if (requestedView === "Audit Logs") {
+      return "Audit history is available in the backend database; its viewer will be added in a later phase.";
+    }
+    return "";
+  });
   const [reviewDoc, setReviewDoc] = useState<PendingDoc | null>(null);
   const [reviewInvoiceIndex, setReviewInvoiceIndex] = useState(0);
 
@@ -176,6 +192,7 @@ export default function Dashboard({
     useState<Record<string, unknown> | null>(null);
   const [validatingReview, setValidatingReview] = useState(false);
   const [rejectingReview, setRejectingReview] = useState(false);
+  const [updatingInvoiceStatus, setUpdatingInvoiceStatus] = useState<number | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -205,6 +222,31 @@ export default function Dashboard({
       setLoading(false);
     }
   }, []);
+
+  const changeInvoiceStatus = useCallback(async (invoice: Invoice) => {
+    const nextStatus = invoice.status === "paid" ? "unpaid" : "paid";
+    const confirmation = nextStatus === "paid"
+      ? `Mark ${invoice.invoice_number} as paid? This changes the status only; it does not create a payment transaction.`
+      : `Reverse the paid status for ${invoice.invoice_number}?`;
+    if (!window.confirm(confirmation)) return;
+
+    setUpdatingInvoiceStatus(invoice.id);
+    setError("");
+    setNotice("");
+    try {
+      await updateInvoiceStatus(invoice.id, nextStatus);
+      await loadData();
+      setNotice(
+        nextStatus === "paid"
+          ? `${invoice.invoice_number} marked as paid.`
+          : `${invoice.invoice_number} returned to ${invoice.due_date < new Date().toISOString().slice(0, 10) ? "overdue" : "unpaid"}.`,
+      );
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to update invoice status.");
+    } finally {
+      setUpdatingInvoiceStatus(null);
+    }
+  }, [loadData]);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -455,86 +497,18 @@ export default function Dashboard({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-logo">
-            <i className="bi bi-cpu-fill" />
-          </div>
-
-          <div>
-            <div className="brand-name">ReceivAI UAE</div>
-            <div className="brand-sub">
-              Agentic Finance Operations
-              <br />
-              & Invoice Intelligence
-            </div>
-          </div>
-        </div>
-
-        <div className="nav-caption">Workspace</div>
-
-        <nav>
-          {views.map((v) => (
-            <button
-              key={v.name}
-              className={`nav-view ${
-                view === v.name ? "active" : ""
-              }`}
-              onClick={() => {
-                setView(v.name);
-                setNotice("");
-              }}
-            >
-              <i className={`bi ${v.icon} nav-icon`} />
-              {v.name}
-            </button>
-          ))}
-        </nav>
-
-        <div className="mt-4 nav-caption">Management</div>
-
-        <button
-          className="nav-view"
-          onClick={() =>
-            setNotice(
-              "Reports will be enabled in a later implementation phase."
-            )
+      <WorkspaceSidebar
+        activeView={view}
+        pendingCount={documentReviewCount}
+        onSelect={(selectedView) => {
+          if (selectedView === "Reports") {
+            setNotice("Reports will be enabled in a later implementation phase.");
+            return;
           }
-        >
-          <i className="bi bi-file-earmark-bar-graph nav-icon" />
-          Reports
-        </button>
-
-        <Link className="nav-view document-nav-link" href="/documents">
-          <i className="bi bi-file-earmark-text nav-icon" />
-          <span>Document Intelligence</span>
-          {documentReviewCount > 0 && (
-            <span className="badge rounded-pill bg-warning text-dark ms-auto">
-              {documentReviewCount}
-            </span>
-          )}
-        </Link>
-
-        <button
-          className="nav-view"
-          onClick={() =>
-            setNotice(
-              "Audit history is available in the backend database; its viewer will be added in a later phase."
-            )
-          }
-        >
-          <i className="bi bi-shield-check nav-icon" />
-          Audit Logs
-        </button>
-
-        <div className="sidebar-bottom">
-          <div className="sidebar-foot">
-            UAE · AI · Finance
-            <br />
-            MVP workspace · Administrator
-          </div>
-        </div>
-      </aside>
+          setNotice("");
+          setView(selectedView);
+        }}
+      />
 
       <div className="main-area">
         <header className="topbar">
@@ -642,6 +616,8 @@ export default function Dashboard({
               invoices={invoices}
               setView={setView}
               reminders={reminders}
+              onStatusChange={changeInvoiceStatus}
+              updatingInvoiceStatus={updatingInvoiceStatus}
             />
           )}
 
@@ -741,7 +717,11 @@ export default function Dashboard({
                   </button>
                 </div>
 
-                <InvoiceTable invoices={invoices} />
+                <InvoiceTable
+                  invoices={invoices}
+                  onStatusChange={changeInvoiceStatus}
+                  updatingInvoiceStatus={updatingInvoiceStatus}
+                />
               </div>
 
               {reviewDoc && (
@@ -1123,7 +1103,11 @@ export default function Dashboard({
                   <h2 className="panel-title mb-3">
                     Overdue invoices
                   </h2>
-                  <InvoiceTable invoices={overdue} />
+                  <InvoiceTable
+                    invoices={overdue}
+                    onStatusChange={changeInvoiceStatus}
+                    updatingInvoiceStatus={updatingInvoiceStatus}
+                  />
                 </div>
               </div>
 
@@ -1243,11 +1227,15 @@ function Overview({
   invoices,
   setView,
   reminders,
+  onStatusChange,
+  updatingInvoiceStatus,
 }: {
   summary: Summary | null;
   invoices: Invoice[];
   setView: (v: string) => void;
   reminders: Reminder[];
+  onStatusChange: (invoice: Invoice) => void;
+  updatingInvoiceStatus: number | null;
 }) {
   const paid = summary?.paid_count || 0;
   const unpaid = summary?.unpaid_count || 0;
@@ -1451,7 +1439,11 @@ function Overview({
               </button>
             </div>
 
-            <InvoiceTable invoices={invoices.slice(0, 5)} />
+            <InvoiceTable
+              invoices={invoices.slice(0, 5)}
+              onStatusChange={onStatusChange}
+              updatingInvoiceStatus={updatingInvoiceStatus}
+            />
           </div>
         </div>
 
@@ -1955,8 +1947,12 @@ function Legend({
 
 function InvoiceTable({
   invoices,
+  onStatusChange,
+  updatingInvoiceStatus,
 }: {
   invoices: Invoice[];
+  onStatusChange: (invoice: Invoice) => void;
+  updatingInvoiceStatus: number | null;
 }) {
   if (!invoices.length) {
     return (
@@ -2013,13 +2009,27 @@ function InvoiceTable({
                 </span>
               </td>
 
-              <td>
-                <button
-                  className="action-link"
-                  type="button"
-                  aria-label={`More actions for ${i.invoice_number}`}
+              <td className="text-nowrap">
+                <Link
+                  className="btn btn-sm btn-outline-secondary me-2"
+                  href={`/invoices/${i.id}`}
+                  aria-label={`View or edit ${i.invoice_number}`}
                 >
-                  <i className="bi bi-three-dots" />
+                  <i className="bi bi-pencil-square me-1" />Edit
+                </Link>
+                <button
+                  className={`btn btn-sm ${i.status === "paid" ? "btn-outline-warning" : "btn-outline-success"}`}
+                  type="button"
+                  onClick={() => onStatusChange(i)}
+                  disabled={updatingInvoiceStatus === i.id}
+                >
+                  {updatingInvoiceStatus === i.id ? (
+                    <span className="spinner-border spinner-border-sm" aria-label="Updating" />
+                  ) : i.status === "paid" ? (
+                    "Undo paid"
+                  ) : (
+                    "Mark paid"
+                  )}
                 </button>
               </td>
             </tr>

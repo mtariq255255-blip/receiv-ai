@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import AuthenticatedPage from "@/components/documents/AuthenticatedPage";
 import DocumentList from "@/components/documents/DocumentList";
 import DocumentUpload from "@/components/documents/DocumentUpload";
+import WorkspaceSidebar from "@/components/WorkspaceSidebar";
 import { clearToken } from "@/lib/api";
 
 function DocumentsWorkspace() {
@@ -26,7 +27,14 @@ function DocumentsWorkspace() {
   }
 
   return (
-    <main className="document-workspace">
+    <div className="app-shell">
+      <WorkspaceSidebar
+        activeView="Document Intelligence"
+        pendingCount={pendingCount}
+        onLogout={logout}
+      />
+      <div className="main-area">
+        <main className="document-workspace">
       <header className="document-topbar">
         <Link className="document-brand" href="/">
           <span className="document-brand-mark">R</span>
@@ -71,7 +79,9 @@ function DocumentsWorkspace() {
           onPendingReviewCount={updatePendingCount}
         />
       </div>
-    </main>
+        </main>
+      </div>
+    </div>
   );
 }
 

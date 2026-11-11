@@ -74,6 +74,8 @@ class UAEInvoiceItemSchema(BaseModel):
         max_digits=14,
         decimal_places=2,
     )
+    source_table: int | None = Field(default=None, ge=1)
+    source_row: int | None = Field(default=None, ge=1)
 
 class UAEInvoiceExtractionSchema(BaseModel):
     """
@@ -156,6 +158,13 @@ class UAEInvoiceExtractionSchema(BaseModel):
         decimal_places=2,
     )
 
+    subtotal_before_discount_aed: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=14,
+        decimal_places=2,
+    )
+
     discount_aed: Decimal | None = Field(
         default=None,
         ge=0,
@@ -202,6 +211,7 @@ class UAEInvoiceExtractionSchema(BaseModel):
 
     source_filename: str | None = None
     source_worksheet: str | None = None
+    source_table: int | None = Field(default=None, ge=1)
     source_page: int | None = None
     source_row: int | None = None
 

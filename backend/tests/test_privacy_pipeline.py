@@ -103,8 +103,6 @@ def test_ai_fallback_maps_original_local_values(monkeypatch):
                         confidence=0.99),
         AIColumnMapping(column_name="buyer", field_name="customer_name",
                         confidence=0.99),
-        AIColumnMapping(column_name="service", field_name="description",
-                        confidence=0.99),
         AIColumnMapping(column_name="total", field_name="total_amount_aed",
                         confidence=0.99),
     ])

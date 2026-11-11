@@ -64,11 +64,33 @@ def run_tests():
                 mime_type="application/pdf",
                 processing_status="uploaded",
                 extraction_notes=None,
-                extracted_data={"file_type": "pdf"},
+                extracted_data={
+                    "file_type": "pdf",
+                    "processing_error": "Previous extraction failed.",
+                },
             )
             db = FakeDatabase(document)
             admin = SimpleNamespace(id=9)
             attempts = {"count": 0}
+
+            preview = documents.preview_document(document.id, db)
+            assert preview.path == source_path
+            assert preview.media_type == "application/pdf"
+            assert preview.headers["cache-control"] == "private, no-store"
+            assert preview.headers["x-content-type-options"] == "nosniff"
+
+            outside_path = Path(storage_dir).parent / "outside.pdf"
+            outside_path.write_bytes(b"private")
+            document.storage_path = str(outside_path)
+            try:
+                documents.preview_document(document.id, db)
+            except HTTPException as exc:
+                assert exc.status_code == 422
+            else:
+                raise AssertionError("Preview must reject files outside private storage.")
+            finally:
+                outside_path.unlink(missing_ok=True)
+                document.storage_path = str(source_path)
 
             def extract_file(**kwargs):
                 del kwargs
@@ -113,6 +135,7 @@ def run_tests():
             assert len(document.extracted_data["processing_attempts"]) == 2
             assert retry_result["document"]["processing_status"] == "pending_review"
             assert "storage_path" not in retry_result["document"]
+            assert "processing_error" not in retry_result["document"]["extracted_data"]
 
             pending = documents.get_pending_documents(db)
             assert pending["count"] == 1

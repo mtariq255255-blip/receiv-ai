@@ -1,5 +1,5 @@
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    CheckConstraint,
     ForeignKey,
     Numeric,
     String,
@@ -72,6 +73,12 @@ class AdminUser(Base):
 class Invoice(Base):
 
     __tablename__ = "invoices"
+    __table_args__ = (
+        CheckConstraint(
+            "source_type IN ('pdf', 'docx', 'xlsx', 'xls', 'csv', 'manual', 'demo')",
+            name="invoices_source_type_check",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger,
@@ -226,11 +233,16 @@ class Invoice(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.current_timestamp(),
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.current_timestamp(),
     )
 
     payments: Mapped[list["Payment"]] = relationship(

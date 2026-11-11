@@ -1,9 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import DocumentStatusBadge from "@/components/documents/DocumentStatusBadge";
-import type { DocumentDetails as DocumentDetailsRecord } from "@/lib/api";
+import {
+  getDocumentPreview,
+  type DocumentDetails as DocumentDetailsRecord,
+} from "@/lib/api";
 
 function objectValue(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -79,6 +83,51 @@ export default function DocumentDetails({
     invoice.source_worksheet ? `Worksheet ${invoice.source_worksheet}` : null,
     invoice.source_row ? `Row ${invoice.source_row}` : null,
   ].filter(Boolean);
+  const isPdf = document.original_filename.toLowerCase().endsWith(".pdf");
+  const [preview, setPreview] = useState<{
+    documentId: number;
+    url: string;
+    error: string;
+    loading: boolean;
+  }>({ documentId: document.id, url: "", error: "", loading: true });
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+
+    getDocumentPreview(document.id)
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPreview({
+          documentId: document.id,
+          url: objectUrl,
+          error: "",
+          loading: false,
+        });
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setPreview({
+            documentId: document.id,
+            url: "",
+            error: error instanceof Error
+              ? error.message
+              : "Unable to load source document.",
+            loading: false,
+          });
+        }
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [document.id]);
+  const currentPreview = preview.documentId === document.id;
+  const previewUrl = currentPreview ? preview.url : "";
+  const previewError = currentPreview ? preview.error : "";
+  const previewLoading = !currentPreview || preview.loading;
 
   return (
     <aside className="document-card">
@@ -166,6 +215,7 @@ export default function DocumentDetails({
               ["Invoice date", invoice.issue_date],
               ["Due date", invoice.due_date],
               ["Subtotal", invoice.subtotal_aed],
+              ["Subtotal before discount", invoice.subtotal_before_discount_aed],
               ["VAT amount", invoice.vat_amount_aed],
               ["Grand total", invoice.total_amount_aed],
             ] as const).map(([label, value]) => (
@@ -193,14 +243,54 @@ export default function DocumentDetails({
 
       <div className="border-top mt-4 pt-3">
         <h3 className="document-subtitle">Document preview</h3>
-        {text ? (
+        {previewLoading && (
+          <div className="small text-secondary" role="status">Loading original document…</div>
+        )}
+        {previewError && (
+          <div className="alert alert-warning py-2 small" role="alert">{previewError}</div>
+        )}
+        {previewUrl && (
+          <>
+            <div className="d-flex justify-content-between align-items-center gap-2 mb-2">
+              <p className="small text-secondary mb-0">
+                {isPdf
+                  ? "Original PDF preview. Use the viewer controls to zoom or navigate pages."
+                  : "This file format is not supported by the browser's inline viewer."}
+              </p>
+              <a
+                className="btn btn-sm btn-outline-primary flex-shrink-0"
+                href={previewUrl}
+                download={document.original_filename}
+              >
+                <i className="bi bi-download me-1" />Download original
+              </a>
+            </div>
+            {isPdf ? (
+              <iframe
+                className="document-source-preview"
+                src={previewUrl}
+                title={`Original source document: ${document.original_filename}`}
+              />
+            ) : text ? (
+              <pre className="document-text-preview">{text}</pre>
+            ) : (
+              <div className="small text-secondary">
+                No inline preview is available for this document type.
+              </div>
+            )}
+          </>
+        )}
+        {!previewLoading && !previewUrl && text ? (
           <>
             <p className="small text-secondary">
-              Showing extracted text from the source. Original file preview is not exposed by the current API.
+              {previewError
+                ? "Showing extracted text because the original file could not be loaded."
+                : "Showing extracted text because no original-file preview is available."}
             </p>
             <pre className="document-text-preview">{text}</pre>
           </>
-        ) : (
+        ) : null}
+        {!previewLoading && !previewUrl && !text && (
           <div className="small text-secondary">
             No text preview is available for this document type.
           </div>
